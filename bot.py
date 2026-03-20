@@ -4,7 +4,7 @@ import json
 import random
 import sqlite3
 import logging
-from datetime import datetime, time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -17,13 +17,9 @@ TOKEN   = os.environ.get("TOKEN", "8261068726:AAEHISdBeFcskXmqWxO0ae3eupkwRcdNuV
 DB_FILE = "brain.db"
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
-# Дневной интервал ответов
-DAY_MIN, DAY_MAX     = 3, 7
-# Ночной интервал ответов (00:00–03:00)
-NIGHT_MIN, NIGHT_MAX = 5, 10
-
-# Шанс троллинга — повторить чужое сообщение (1/N)
-TROLL_CHANCE = 25
+DAY_MIN,   DAY_MAX   = 3, 7    # интервал ответов днём
+NIGHT_MIN, NIGHT_MAX = 5, 10   # интервал ответов ночью (00–03)
+TROLL_CHANCE = 25               # 1/N шанс повторить чужое сообщение
 # ─────────────────────────────────────────────────────────────
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
@@ -38,7 +34,6 @@ def kyiv_hour() -> int:
     return kyiv_now().hour
 
 def is_day() -> bool:
-    """06:00–23:59 — обычный режим"""
     return 6 <= kyiv_hour() < 24
 
 def is_early_night() -> bool:
@@ -46,12 +41,16 @@ def is_early_night() -> bool:
     return 0 <= kyiv_hour() < 3
 
 def is_deep_night() -> bool:
-    """03:00–05:59 — бот спит, не отвечает"""
+    """03:00–05:59 — бот спит"""
     return 3 <= kyiv_hour() < 6
+
+def get_respond_interval() -> int:
+    if is_early_night():
+        return random.randint(NIGHT_MIN, NIGHT_MAX)
+    return random.randint(DAY_MIN, DAY_MAX)
 
 # ─── ПАСХАЛКИ ────────────────────────────────────────────────
 
-# Дневные — только те что придумал ты
 DAY_EASTER_EGGS = [
     (2000, "расскажу один секрет что в боте есть редкости сообщений. если кратко то вы выбили это сообщение с редкостю 1 к двум тысячам. и есть ещё самые разные сообщение ранее и они идут в таком порядке. 1/50 1/100 1/250 1/500 1/1000"),
     (1000, "АТДАЙ МКАШКУ СИН ХУНИ ИБУЧИЙ"),
@@ -61,28 +60,24 @@ DAY_EASTER_EGGS = [
     (50,   "сегодня был довольно мрачный вечер, меня отец отпиздил за то что я спиздил банку огурцов у соседей"),
 ]
 
-# Ночные — только ночью
 NIGHT_EASTER_EGGS = [
     (10, "я хочу спать...."),
     (5,  "zzzzzzz..."),
 ]
 
 def roll_easter_egg() -> str | None:
-    """Возвращает пасхалку если повезло, иначе None. Ночью только ночные."""
     if is_early_night():
-        # Только ночные пасхалки
         for chance, text in sorted(NIGHT_EASTER_EGGS, key=lambda x: -x[0]):
             if random.randint(1, chance) == 1:
                 return text
         return None
-    else:
-        # Только дневные пасхалки
-        for chance, text in sorted(DAY_EASTER_EGGS, key=lambda x: -x[0]):
-            if random.randint(1, chance) == 1:
-                return text
-        return None
+    for chance, text in sorted(DAY_EASTER_EGGS, key=lambda x: -x[0]):
+        if random.randint(1, chance) == 1:
+            return text
+    return None
 
-# ─── СПИСОК КОМАНД ДЛЯ МЕНЮ ──────────────────────────────────
+# ─── КОМАНДЫ ДЛЯ МЕНЮ (показываются при вводе /) ─────────────
+
 BOT_COMMANDS = [
     BotCommand("учись",       "🧠 Начать обучение — читаю и запоминаю"),
     BotCommand("стоп_учись",  "📚 Остановить обучение"),
@@ -91,7 +86,7 @@ BOT_COMMANDS = [
     BotCommand("стата",       "📊 Статистика бота"),
     BotCommand("скажи",       "🗣 Сказать случайную фразу"),
     BotCommand("кто_знает",   "👥 Кого я знаю в этом чате"),
-    BotCommand("забудь",      "🧹 Забыть одного человека (/забудь vasya)"),
+    BotCommand("забудь",      "🧹 Забыть одного человека"),
     BotCommand("сброс",       "🗑 Сбросить всё что знаю"),
 ]
 
@@ -110,7 +105,8 @@ def init_db():
             learning        INTEGER DEFAULT 0,
             chatting        INTEGER DEFAULT 0,
             msg_count       INTEGER DEFAULT 0,
-            next_respond_at INTEGER DEFAULT 3
+            next_respond_at INTEGER DEFAULT 3,
+            morning_sent    INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS markov (
             chat_id   INTEGER,
@@ -142,10 +138,11 @@ def init_db():
             PRIMARY KEY (chat_id, user_id)
         );
         """)
-        try:
-            db.execute("ALTER TABLE state ADD COLUMN next_respond_at INTEGER DEFAULT 3")
-        except Exception:
-            pass
+        for col in ["next_respond_at INTEGER DEFAULT 3", "morning_sent INTEGER DEFAULT 0"]:
+            try:
+                db.execute(f"ALTER TABLE state ADD COLUMN {col}")
+            except Exception:
+                pass
 
 # ─── СОСТОЯНИЕ ───────────────────────────────────────────────
 
@@ -153,9 +150,13 @@ def get_state(chat_id: int) -> dict:
     with get_db() as db:
         row = db.execute("SELECT * FROM state WHERE chat_id=?", (chat_id,)).fetchone()
         if not row:
-            next_at = random.randint(DAY_MIN, DAY_MAX)
-            db.execute("INSERT INTO state (chat_id, next_respond_at) VALUES (?, ?)", (chat_id, next_at))
-            return {"learning": 0, "chatting": 0, "msg_count": 0, "next_respond_at": next_at}
+            next_at = get_respond_interval()
+            db.execute(
+                "INSERT INTO state (chat_id, next_respond_at, morning_sent) VALUES (?, ?, 0)",
+                (chat_id, next_at)
+            )
+            return {"learning": 0, "chatting": 0, "msg_count": 0,
+                    "next_respond_at": next_at, "morning_sent": 0}
         return dict(row)
 
 def set_state(chat_id: int, **kwargs):
@@ -164,12 +165,6 @@ def set_state(chat_id: int, **kwargs):
     vals = list(kwargs.values()) + [chat_id]
     with get_db() as db:
         db.execute(f"UPDATE state SET {sets} WHERE chat_id=?", vals)
-
-def get_respond_interval() -> int:
-    """Возвращает рандомный интервал — ночью больше"""
-    if is_early_night():
-        return random.randint(NIGHT_MIN, NIGHT_MAX)
-    return random.randint(DAY_MIN, DAY_MAX)
 
 # ─── ПОЛЬЗОВАТЕЛИ ────────────────────────────────────────────
 
@@ -306,7 +301,6 @@ def apply_style(chat_id: int, text: str) -> str:
     emojis = json.loads(row["emoji_list"])
     if emojis and random.random() < 0.35:
         text += " " + random.choice(emojis)
-    # Иногда обращается к кому-то по имени
     names = get_user_names(chat_id)
     if names and random.random() < 0.15:
         text = random.choice(names) + " " + text
@@ -323,7 +317,6 @@ def get_markov_count(chat_id: int) -> int:
 # ─── ОТПРАВКА ОТВЕТА ─────────────────────────────────────────
 
 async def send_response(msg, cid: int, reply_to_id: int | None = None):
-    """Генерирует ответ. Ночью — только ночные пасхалки или сон-текст."""
     easter = roll_easter_egg()
     text   = easter if easter else generate_text(cid, max_words=20)
     if not text:
@@ -341,7 +334,7 @@ async def cmd_учись(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 Режим обучения включён!\n"
         f"Слов в словаре: {get_vocab_count(cid)}\n\n"
-        "Молча читаю все сообщения и запоминаю.\n"
+        "Молча читаю все сообщения.\n"
         "Остановить: /стоп_учись"
     )
 
@@ -365,13 +358,13 @@ async def cmd_говори(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     next_at = get_respond_interval()
     set_state(cid, chatting=1, msg_count=0, next_respond_at=next_at)
-    night_note = " 🌙" if is_early_night() else ""
+    night_note   = " 🌙" if is_early_night() else ""
+    interval_str = f"{NIGHT_MIN}–{NIGHT_MAX}" if is_early_night() else f"{DAY_MIN}–{DAY_MAX}"
     first = generate_text(cid, max_words=10)
-    interval_info = f"{NIGHT_MIN}–{NIGHT_MAX}" if is_early_night() else f"{DAY_MIN}–{DAY_MAX}"
     await update.message.reply_text(
         f"💬 Начинаю говорить{night_note}!\n"
         f"📖 Знаю {vocab} слов\n"
-        f"🎲 Пишу каждые {interval_info} сообщений\n\n"
+        f"🎲 Пишу каждые {interval_str} сообщений\n\n"
         f"Вот что думаю: «{first or '...думаю...'}»\n\n"
         "Остановить: /стоп_говори"
     )
@@ -388,7 +381,6 @@ async def cmd_стата(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as db:
         style_row = db.execute("SELECT * FROM style WHERE chat_id=?", (cid,)).fetchone()
 
-    # Топ болтунов
     top = ""
     if users:
         top = "\n\n🏆 *Топ болтунов:*\n"
@@ -406,13 +398,13 @@ async def cmd_стата(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  Эмодзи: {' '.join(emojis[:6]) if emojis else 'нет'}\n"
         )
 
-    hour = kyiv_hour()
+    h = kyiv_hour()
     if is_deep_night():
-        time_status = f"🌙 {hour}:xx — я сплю (03:00–06:00)"
+        time_status = f"😴 {h}:xx — я сплю (03:00–06:00)"
     elif is_early_night():
-        time_status = f"🌙 {hour}:xx — ночной режим (00:00–03:00)"
+        time_status = f"🌙 {h}:xx — ночной режим (00:00–03:00)"
     else:
-        time_status = f"☀️ {hour}:xx — дневной режим"
+        time_status = f"☀️ {h}:xx — дневной режим"
 
     remaining = max(0, state["next_respond_at"] - state["msg_count"])
     await update.message.reply_text(
@@ -440,7 +432,7 @@ async def cmd_сброс(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     with get_db() as db:
         for tbl in ["markov", "vocab", "style", "users"]:
             db.execute(f"DELETE FROM {tbl} WHERE chat_id=?", (cid,))
-        db.execute("UPDATE state SET msg_count=0 WHERE chat_id=?", (cid,))
+        db.execute("UPDATE state SET msg_count=0, morning_sent=0 WHERE chat_id=?", (cid,))
     await update.message.reply_text("🗑️ Всё забыл. Чистый лист.\n\n/учись")
 
 async def cmd_кто_знает(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -459,44 +451,22 @@ async def cmd_забудь(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = update.effective_chat.id
     args = ctx.args
     if not args:
-        await update.message.reply_text("Напиши кого забыть.\nПример: /забудь vasya или /забудь @vasya")
+        await update.message.reply_text(
+            "Напиши кого забыть.\nПример: /забудь vasya или /забудь @vasya"
+        )
         return
     target = args[0]
     forget_user_by_name(cid, target)
-    await update.message.reply_text(f"🧹 Всё что я знал о {target} — удалено. Кто это вообще был?")
-
-# ─── ДОБРОЕ УТРО (06:00 по Киеву) ────────────────────────────
-
-async def morning_greeting(ctx: ContextTypes.DEFAULT_TYPE):
-    """Отправляет доброе утро в 06:00 по Киеву во все активные чаты"""
-    with get_db() as db:
-        rows = db.execute("SELECT chat_id FROM state WHERE chatting=1").fetchall()
-    for row in rows:
-        try:
-            await ctx.bot.send_message(
-                chat_id=row["chat_id"],
-                text="всем доброе утро! я так хорошо поспал 😴 а вы как спали?"
-            )
-        except Exception as e:
-            log.warning(f"Не смог отправить утро в {row['chat_id']}: {e}")
+    await update.message.reply_text(
+        f"🧹 Всё что я знал о {target} — удалено. Кто это вообще был?"
+    )
 
 # ─── ОБРАБОТКА СООБЩЕНИЙ ─────────────────────────────────────
 
 SKIP_PATTERN = re.compile(r"^/")
 
-# Ключевые слова для управления через @botname слово
-KEYWORD_MAP = {
-    "учись":       "учись",
-    "стоп_учись":  "стоп_учись",
-    "говори":      "говори",
-    "стоп_говори": "стоп_говори",
-    "стата":       "стата",
-    "скажи":       "скажи",
-    "сброс":       "сброс",
-    "кто_знает":   "кто_знает",
-}
-
-CMD_HANDLERS = {}  # заполняется в main()
+# Словарь для @botname команда
+CMD_HANDLERS: dict = {}
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -513,16 +483,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if msg.from_user:
         remember_user(cid, msg.from_user)
 
-    # Проверяем @botname + слово (альтернатива слешам)
     bot_info = await ctx.bot.get_me()
     bot_un   = ("@" + bot_info.username.lower()) if bot_info.username else ""
+
+    # Поддержка @botname команда (альтернатива слешу)
     if bot_un and text.lower().startswith(bot_un):
         rest = text[len(bot_un):].strip().lower()
-        if rest in KEYWORD_MAP:
-            handler = CMD_HANDLERS.get(KEYWORD_MAP[rest])
-            if handler:
-                await handler(update, ctx)
-                return
+        handler = CMD_HANDLERS.get(rest)
+        if handler:
+            await handler(update, ctx)
+            return
 
     # ── ОБУЧЕНИЕ ──────────────────────────────────────────────
     if state["learning"]:
@@ -534,42 +504,53 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"📚 Уже выучил {get_vocab_count(cid)} слов!")
 
     # ── ОБЩЕНИЕ ───────────────────────────────────────────────
-    if state["chatting"]:
+    if not state["chatting"]:
+        return
 
-        # ⛔ 03:00–06:00 — бот спит полностью
-        if is_deep_night():
-            return
+    # ⛔ 03:00–06:00 — бот спит
+    if is_deep_night():
+        return
 
-        bot_id   = bot_info.id
-        bot_name = bot_info.first_name.lower()
+    # 🌅 Доброе утро — первый раз после 06:00 каждый день
+    h = kyiv_hour()
+    if h >= 6 and not state.get("morning_sent", 0):
+        set_state(cid, morning_sent=1)
+        await msg.reply_text("всем доброе утро! я так хорошо поспал 😴 а вы как спали?")
+        return
 
-        # 1. Ответили на сообщение бота
-        #    ТОЛЬКО ДНЁМ — ночью не отвечает на реплаи
-        replied_to = msg.reply_to_message
-        if replied_to and replied_to.from_user and replied_to.from_user.id == bot_id:
-            if is_day():
-                await send_response(msg, cid, reply_to_id=replied_to.message_id)
-            return
+    # Сброс флага утра в полночь
+    if h == 0 and state.get("morning_sent", 0):
+        set_state(cid, morning_sent=0)
 
-        # 2. Упомянули бота — отвечает всегда (кроме глубокой ночи, уже проверили)
-        if bot_name in text.lower() or (bot_un and bot_un in text.lower()):
-            await send_response(msg, cid)
-            return
+    bot_id   = bot_info.id
+    bot_name = bot_info.first_name.lower()
 
-        # 3. Троллинг — иногда повторяет чужое сообщение
-        if random.randint(1, TROLL_CHANCE) == 1 and len(text.split()) >= 2:
-            await msg.reply_text(text)
-            return
+    # 1. Ответили на сообщение бота — только днём
+    replied_to = msg.reply_to_message
+    if replied_to and replied_to.from_user and replied_to.from_user.id == bot_id:
+        if is_day():
+            await send_response(msg, cid, reply_to_id=replied_to.message_id)
+        return
 
-        # 4. Счётчик — каждые N сообщений (ночью N больше)
-        new_count    = state["msg_count"] + (0 if state["learning"] else 1)
-        next_respond = state["next_respond_at"]
-        if not state["learning"]:
-            set_state(cid, msg_count=new_count)
-        if new_count >= next_respond:
-            new_next = new_count + get_respond_interval()
-            set_state(cid, msg_count=new_count, next_respond_at=new_next)
-            await send_response(msg, cid)
+    # 2. Упомянули бота
+    if bot_name in text.lower() or (bot_un and bot_un in text.lower()):
+        await send_response(msg, cid)
+        return
+
+    # 3. Троллинг — повторяет чужое сообщение
+    if random.randint(1, TROLL_CHANCE) == 1 and len(text.split()) >= 2:
+        await msg.reply_text(text)
+        return
+
+    # 4. Счётчик каждые N сообщений
+    new_count    = state["msg_count"] + (0 if state["learning"] else 1)
+    next_respond = state["next_respond_at"]
+    if not state["learning"]:
+        set_state(cid, msg_count=new_count)
+    if new_count >= next_respond:
+        new_next = new_count + get_respond_interval()
+        set_state(cid, msg_count=new_count, next_respond_at=new_next)
+        await send_response(msg, cid)
 
 # ─── ЗАПУСК ──────────────────────────────────────────────────
 
@@ -579,7 +560,6 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Регистрируем команды
     handlers = {
         "учись":       cmd_учись,
         "стоп_учись":  cmd_стоп_учись,
@@ -598,16 +578,10 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Доброе утро ровно в 06:00 по Киеву каждый день
-    app.job_queue.run_daily(
-        morning_greeting,
-        time=time(hour=6, minute=0, tzinfo=KYIV_TZ)
-    )
-
-    # Регистрируем список команд в Telegram (показываются при вводе /)
+    # Регистрируем команды в меню Telegram (список при вводе /)
     async def post_init(application):
         await application.bot.set_my_commands(BOT_COMMANDS)
-        log.info("Команды зарегистрированы в меню Telegram ✓")
+        log.info("Меню команд зарегистрировано ✓")
 
     app.post_init = post_init
 
