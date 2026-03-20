@@ -17,9 +17,9 @@ TOKEN   = os.environ.get("TOKEN", "8261068726:AAEHISdBeFcskXmqWxO0ae3eupkwRcdNuV
 DB_FILE = "brain.db"
 KYIV_TZ = ZoneInfo("Europe/Kiev")
 
-DAY_MIN,   DAY_MAX   = 3, 7    # интервал ответов днём
-NIGHT_MIN, NIGHT_MAX = 5, 10   # интервал ответов ночью (00–03)
-TROLL_CHANCE = 25               # 1/N шанс повторить чужое сообщение
+DAY_MIN,   DAY_MAX   = 3, 7
+NIGHT_MIN, NIGHT_MAX = 5, 10
+TROLL_CHANCE = 25
 # ─────────────────────────────────────────────────────────────
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
@@ -27,21 +27,16 @@ log = logging.getLogger(__name__)
 
 # ─── ВРЕМЯ КИЕВА ─────────────────────────────────────────────
 
-def kyiv_now() -> datetime:
-    return datetime.now(KYIV_TZ)
-
 def kyiv_hour() -> int:
-    return kyiv_now().hour
+    return datetime.now(KYIV_TZ).hour
 
 def is_day() -> bool:
     return 6 <= kyiv_hour() < 24
 
 def is_early_night() -> bool:
-    """00:00–02:59 — сонный режим"""
     return 0 <= kyiv_hour() < 3
 
 def is_deep_night() -> bool:
-    """03:00–05:59 — бот спит"""
     return 3 <= kyiv_hour() < 6
 
 def get_respond_interval() -> int:
@@ -76,18 +71,18 @@ def roll_easter_egg() -> str | None:
             return text
     return None
 
-# ─── КОМАНДЫ ДЛЯ МЕНЮ (показываются при вводе /) ─────────────
+# ─── МЕНЮ КОМАНД (показывается при вводе /) ──────────────────
 
 BOT_COMMANDS = [
-    BotCommand("учись",       "🧠 Начать обучение — читаю и запоминаю"),
-    BotCommand("стоп_учись",  "📚 Остановить обучение"),
-    BotCommand("говори",      "💬 Начать общение в чате"),
-    BotCommand("стоп_говори", "🤐 Остановить общение"),
-    BotCommand("стата",       "📊 Статистика бота"),
-    BotCommand("скажи",       "🗣 Сказать случайную фразу"),
-    BotCommand("кто_знает",   "👥 Кого я знаю в этом чате"),
-    BotCommand("забудь",      "🧹 Забыть одного человека"),
-    BotCommand("сброс",       "🗑 Сбросить всё что знаю"),
+    BotCommand("learn",      "🧠 Начать обучение — читаю и запоминаю"),
+    BotCommand("stoplearn",  "📚 Остановить обучение"),
+    BotCommand("talk",       "💬 Начать общение в чате"),
+    BotCommand("stoptalk",   "🤐 Остановить общение"),
+    BotCommand("stats",      "📊 Статистика бота"),
+    BotCommand("say",        "🗣 Сказать случайную фразу"),
+    BotCommand("whoknows",   "👥 Кого я знаю в этом чате"),
+    BotCommand("forget",     "🧹 Забыть человека: /forget vasya"),
+    BotCommand("reset",      "🗑 Сбросить всё что знаю"),
 ]
 
 # ─── БАЗА ДАННЫХ ─────────────────────────────────────────────
@@ -244,10 +239,10 @@ def learn_style(chat_id: int, text: str):
                 UPDATE style SET avg_len=?, caps_ratio=?, emoji_list=?, no_punct_ratio=?, samples=?
                 WHERE chat_id=?
             """, (
-                (row["avg_len"]*n       + len(words))  / (n+1),
-                (row["caps_ratio"]*n    + caps_ratio)  / (n+1),
+                (row["avg_len"]*n        + len(words))  / (n+1),
+                (row["caps_ratio"]*n     + caps_ratio)  / (n+1),
                 json.dumps(list(set(json.loads(row["emoji_list"]) + emojis))[-20:]),
-                (row["no_punct_ratio"]*n + no_punct)   / (n+1),
+                (row["no_punct_ratio"]*n + no_punct)    / (n+1),
                 n+1, chat_id
             ))
 
@@ -328,32 +323,32 @@ async def send_response(msg, cid: int, reply_to_id: int | None = None):
 
 # ─── КОМАНДЫ ─────────────────────────────────────────────────
 
-async def cmd_учись(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_learn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     set_state(cid, learning=1)
     await update.message.reply_text(
         "🧠 Режим обучения включён!\n"
         f"Слов в словаре: {get_vocab_count(cid)}\n\n"
         "Молча читаю все сообщения.\n"
-        "Остановить: /стоп_учись"
+        "Остановить: /stoplearn"
     )
 
-async def cmd_стоп_учись(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_stoplearn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     set_state(cid, learning=0)
     await update.message.reply_text(
         "📚 Обучение остановлено.\n\n"
         f"📖 Слов: {get_vocab_count(cid)}\n"
         f"🔗 Связей: {get_markov_count(cid)}\n\n"
-        "Запустить общение: /говори"
+        "Запустить общение: /talk"
     )
 
-async def cmd_говори(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_talk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid   = update.effective_chat.id
     vocab = get_vocab_count(cid)
     if vocab < 10:
         await update.message.reply_text(
-            f"😅 Маловато знаний... Слов: {vocab} (нужно хотя бы 10)\n\nСначала: /учись"
+            f"😅 Маловато знаний... Слов: {vocab} (нужно хотя бы 10)\n\nСначала: /learn"
         )
         return
     next_at = get_respond_interval()
@@ -366,15 +361,15 @@ async def cmd_говори(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📖 Знаю {vocab} слов\n"
         f"🎲 Пишу каждые {interval_str} сообщений\n\n"
         f"Вот что думаю: «{first or '...думаю...'}»\n\n"
-        "Остановить: /стоп_говори"
+        "Остановить: /stoptalk"
     )
 
-async def cmd_стоп_говори(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_stoptalk(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     set_state(cid, chatting=0)
-    await update.message.reply_text("🤐 Молчу.\n\nСнова: /говори")
+    await update.message.reply_text("🤐 Молчу.\n\nСнова: /talk")
 
-async def cmd_стата(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid   = update.effective_chat.id
     state = get_state(cid)
     users = get_users(cid)
@@ -419,7 +414,7 @@ async def cmd_стата(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def cmd_скажи(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_say(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     if get_vocab_count(cid) < 5:
         await update.message.reply_text("Слишком мало знаний 😕")
@@ -427,19 +422,19 @@ async def cmd_скажи(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     phrase = generate_text(cid, max_words=25)
     await update.message.reply_text(phrase or "...не могу придумать что сказать...")
 
-async def cmd_сброс(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     with get_db() as db:
         for tbl in ["markov", "vocab", "style", "users"]:
             db.execute(f"DELETE FROM {tbl} WHERE chat_id=?", (cid,))
         db.execute("UPDATE state SET msg_count=0, morning_sent=0 WHERE chat_id=?", (cid,))
-    await update.message.reply_text("🗑️ Всё забыл. Чистый лист.\n\n/учись")
+    await update.message.reply_text("🗑️ Всё забыл. Чистый лист.\n\n/learn")
 
-async def cmd_кто_знает(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_whoknows(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid   = update.effective_chat.id
     users = get_users(cid)
     if not users:
-        await update.message.reply_text("Я никого не знаю 😢\nВключи /учись и поговорите немного.")
+        await update.message.reply_text("Я никого не знаю 😢\nВключи /learn и поговорите немного.")
         return
     lines = ["👥 *Кого я знаю в этом чате:*\n"]
     for u in users:
@@ -447,12 +442,12 @@ async def cmd_кто_знает(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {u['name']}{un} — {u['msg_count']} сообщ.")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-async def cmd_забудь(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cmd_forget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid  = update.effective_chat.id
     args = ctx.args
     if not args:
         await update.message.reply_text(
-            "Напиши кого забыть.\nПример: /забудь vasya или /забудь @vasya"
+            "Напиши кого забыть.\nПример: /forget vasya или /forget @vasya"
         )
         return
     target = args[0]
@@ -465,9 +460,6 @@ async def cmd_забудь(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 SKIP_PATTERN = re.compile(r"^/")
 
-# Словарь для @botname команда
-CMD_HANDLERS: dict = {}
-
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text:
@@ -479,20 +471,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cid   = update.effective_chat.id
     state = get_state(cid)
 
-    # Запоминаем пользователя
     if msg.from_user:
         remember_user(cid, msg.from_user)
-
-    bot_info = await ctx.bot.get_me()
-    bot_un   = ("@" + bot_info.username.lower()) if bot_info.username else ""
-
-    # Поддержка @botname команда (альтернатива слешу)
-    if bot_un and text.lower().startswith(bot_un):
-        rest = text[len(bot_un):].strip().lower()
-        handler = CMD_HANDLERS.get(rest)
-        if handler:
-            await handler(update, ctx)
-            return
 
     # ── ОБУЧЕНИЕ ──────────────────────────────────────────────
     if state["learning"]:
@@ -507,11 +487,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not state["chatting"]:
         return
 
-    # ⛔ 03:00–06:00 — бот спит
+    # 03:00–06:00 — бот спит
     if is_deep_night():
         return
 
-    # 🌅 Доброе утро — первый раз после 06:00 каждый день
+    # Доброе утро — первый раз после 06:00
     h = kyiv_hour()
     if h >= 6 and not state.get("morning_sent", 0):
         set_state(cid, morning_sent=1)
@@ -522,8 +502,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if h == 0 and state.get("morning_sent", 0):
         set_state(cid, morning_sent=0)
 
+    bot_info = await ctx.bot.get_me()
     bot_id   = bot_info.id
     bot_name = bot_info.first_name.lower()
+    bot_un   = ("@" + bot_info.username.lower()) if bot_info.username else ""
 
     # 1. Ответили на сообщение бота — только днём
     replied_to = msg.reply_to_message
@@ -537,7 +519,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await send_response(msg, cid)
         return
 
-    # 3. Троллинг — повторяет чужое сообщение
+    # 3. Троллинг
     if random.randint(1, TROLL_CHANCE) == 1 and len(text.split()) >= 2:
         await msg.reply_text(text)
         return
@@ -560,25 +542,17 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    handlers = {
-        "учись":       cmd_учись,
-        "стоп_учись":  cmd_стоп_учись,
-        "говори":      cmd_говори,
-        "стоп_говори": cmd_стоп_говори,
-        "стата":       cmd_стата,
-        "скажи":       cmd_скажи,
-        "сброс":       cmd_сброс,
-        "кто_знает":   cmd_кто_знает,
-        "забудь":      cmd_забудь,
-    }
-    CMD_HANDLERS.update(handlers)
-
-    for cmd, handler in handlers.items():
-        app.add_handler(CommandHandler(cmd, handler))
-
+    app.add_handler(CommandHandler("learn",     cmd_learn))
+    app.add_handler(CommandHandler("stoplearn", cmd_stoplearn))
+    app.add_handler(CommandHandler("talk",      cmd_talk))
+    app.add_handler(CommandHandler("stoptalk",  cmd_stoptalk))
+    app.add_handler(CommandHandler("stats",     cmd_stats))
+    app.add_handler(CommandHandler("say",       cmd_say))
+    app.add_handler(CommandHandler("reset",     cmd_reset))
+    app.add_handler(CommandHandler("whoknows",  cmd_whoknows))
+    app.add_handler(CommandHandler("forget",    cmd_forget))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Регистрируем команды в меню Telegram (список при вводе /)
     async def post_init(application):
         await application.bot.set_my_commands(BOT_COMMANDS)
         log.info("Меню команд зарегистрировано ✓")
